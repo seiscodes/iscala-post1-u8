@@ -129,6 +129,55 @@ grep -rn "import org.springframework\|import jakarta" src/main/java/com/example/
 
 ---
 
+## Parte 2 — Análisis costo-beneficio de CQRS / Event Sourcing
+
+Requisitos nuevos del comité de auditoría:
+
+1. **Dashboard:** hallazgos por severidad, hallazgos por estado y promedio de días entre
+   detección y cierre de los hallazgos cerrados, por área responsable.
+2. **Trazabilidad legal:** reconstruir cronológicamente cada cambio de estado de un hallazgo
+   (quién, cuándo, de qué estado a qué estado) sin que el registro se pueda alterar después.
+
+Este análisis se escribió antes de implementar, aplicando los criterios de las secciones 4.4
+y 7 de la guía.
+
+**Escala y carga.** El sistema lo usa el área de auditoría interna: unas pocas personas que
+registran hallazgos y un comité que consulta el dashboard una vez al mes antes de su reunión.
+Siendo generosos, decenas de escrituras al día y algunas decenas de consultas al mes. No hay
+diferencia de escala entre lecturas y escrituras que obligue a escalar una de las dos por
+separado; las dos caben con mucha holgura en la misma base de datos.
+
+**Complejidad de las consultas.** Los tres indicadores son un `COUNT ... GROUP BY severidad`,
+un `COUNT ... GROUP BY estado` y un `AVG(dias) ... WHERE estado = 'CERRADO' GROUP BY area`
+sobre una sola tabla. No hay joins entre agregados, ni búsqueda de texto, ni datos que
+tengan una forma distinta a la del modelo de escritura. Se resuelven con consultas sobre el
+mismo esquema; un modelo de lectura con otra tecnología (otra base, Elasticsearch, tablas
+desnormalizadas) no agregaría nada.
+
+**Consistencia.** El comité revisa el dashboard bajo demanda, antes de cada reunión. Lo
+esperable es que refleje el estado en el momento de la consulta, como cualquier reporte. Con
+una consulta directa la consistencia es inmediata y gratis; con CQRS habría que mantener una
+proyección y aceptar (o resolver) un desfase que hoy no existe.
+
+**Naturaleza de la trazabilidad.** Cumplimiento pide ver la secuencia de cambios, no
+reconstruir el estado del hallazgo reproduciendo eventos. El estado actual ya está guardado y
+es correcto. Lo que falta es una bitácora cronológica, de solo inserción, escrita en la misma
+transacción que cada cambio. Event Sourcing convertiría esa bitácora en la fuente de verdad
+del estado, que es un cambio de fondo que el requisito no pide.
+
+**Señales de sobre-ingeniería (sección 7.2).** Las tres aparecen: no hay un experto de negocio
+disponible para modelar eventos (el modelo de estados lo definió la guía), el equipo es una
+persona sin experiencia previa en Event Sourcing, y el costo de dos modelos (proyecciones,
+replay, versionado de eventos, snapshots) no es proporcional a un dashboard de tres consultas
+y una tabla de historial.
+
+**Conclusión.** No se justifica CQRS completo ni Event Sourcing completo. Se implementa una
+extensión liviana: tres consultas agregadas en el mismo puerto `HallazgoRepositoryPort` y una
+bitácora append-only (`historial_cambios_estado`) que coexiste con el estado actual. Lo que
+haría cambiar esta conclusión está al final, en las conclusiones.
+
+---
+
 ## Decisiones de diseño
 
 ### 1. `Severidad` como enum simple y `EstadoHallazgo` como enum con máquina de estados
