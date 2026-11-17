@@ -176,6 +176,64 @@ extensión liviana: tres consultas agregadas en el mismo puerto `HallazgoReposit
 bitácora append-only (`historial_cambios_estado`) que coexiste con el estado actual. Lo que
 haría cambiar esta conclusión está al final, en las conclusiones.
 
+### Extensión implementada
+
+| Requisito | Implementación |
+|---|---|
+| Dashboard | `HallazgoRepositoryPort` gana `contarPorSeveridad`, `contarPorEstado` y `promedioDiasCierrePorArea`. `HallazgoJpaRepository` las resuelve con dos JPQL `GROUP BY` y una consulta nativa (`DATEDIFF` es una función de H2 y no existe en JPQL). `ObtenerDashboardAuditoriaService` las junta en `DashboardAuditoriaView`. |
+| Trazabilidad | `HistorialAuditoriaPort` con `HistorialAuditoriaAdapter` sobre la tabla `historial_cambios_estado`. Cada caso de uso que cambia el estado (y el registro inicial) agrega una fila con estado anterior, estado nuevo, motivo, usuario (cabecera `X-Usuario`) y fecha. |
+| Misma transacción | El círculo Use Cases no puede usar `@Transactional`. `AuditoriaConfiguration` envuelve cada caso de uso de escritura en un `TransactionTemplate`, así el `UPDATE` del hallazgo y el `INSERT` de la bitácora se confirman juntos. `TransaccionBitacoraTest` fuerza un fallo en la bitácora y comprueba que el hallazgo sigue `ABIERTO`. |
+| No alterable | `HistorialCambioEstadoJpaEntity` es `@Immutable`, sin setters y con columnas `updatable = false`. Su repositorio extiende `Repository` (no `JpaRepository`) y solo declara `save` y una consulta: no hay `delete` disponible. |
+
+`HallazgoJpaEntity` sigue siendo la única fuente del estado actual. La bitácora se lee solo
+para mostrarla en `/historial`; nunca se usa para reconstruir el agregado.
+
+| Método | Ruta | Respuesta |
+|---|---|---|
+| GET | `/api/hallazgos/dashboard` | 200 con `porSeveridad`, `porEstado` y `promedioDiasCierrePorArea` |
+| GET | `/api/hallazgos/{id}/historial` | 200 con los cambios en orden cronológico; 404 si el hallazgo no existe |
+
+```bash
+curl http://localhost:8080/api/hallazgos/dashboard
+curl http://localhost:8080/api/hallazgos/{id}/historial
+curl -X PATCH http://localhost:8080/api/hallazgos/{id}/cerrar -H "X-Usuario: jefe.infra"
+```
+
+Ejemplo de respuesta del historial de un hallazgo que se abrió, se remedió, se cerró y se
+reabrió:
+
+```json
+[
+  {"estadoAnterior":null,"estadoNuevo":"ABIERTO","motivo":"Registro del hallazgo","usuario":"auditor.lopez","fecha":"..."},
+  {"estadoAnterior":"ABIERTO","estadoNuevo":"EN_REMEDIACION","motivo":"Plan de remediacion a cargo de Equipo de Infraestructura","usuario":"jefe.infra","fecha":"..."},
+  {"estadoAnterior":"EN_REMEDIACION","estadoNuevo":"CERRADO","motivo":"Cierre de remediacion","usuario":"jefe.infra","fecha":"..."},
+  {"estadoAnterior":"CERRADO","estadoNuevo":"REABIERTO","motivo":"El escaneo de octubre volvio a encontrar la credencial","usuario":"auditor.lopez","fecha":"..."}
+]
+```
+
+Pruebas de la Parte 2: `CasosDeUsoTest` (bitácora con fakes, sin Spring),
+`ConsultasDashboardTest` (`@DataJpaTest` con fechas conocidas: TI cierra en 10 y 20 días →
+promedio 15), `DashboardYHistorialApiTest` (una fila por transición, ninguna en una
+transición rechazada, orden y contenido del historial) y `TransaccionBitacoraTest`.
+
+### Evidencias de los endpoints
+
+`generar-evidencias.ps1` compila el jar, levanta la API, recorre los checkpoints de ambas
+partes con `curl -i` y guarda cada respuesta en [`docs/evidencias`](docs/evidencias):
+
+| Archivo | Checkpoint |
+|---|---|
+| `01-registrar-hallazgo-201.txt` | registro con UUID |
+| `03-registrar-sin-titulo-400.txt` | validación de entrada |
+| `04-iniciar-remediacion-200.txt` | ABIERTO → EN_REMEDIACION |
+| `05-cerrar-hallazgo-abierto-400.txt` | cerrar sin plan |
+| `06-cerrar-...-200.txt` / `07-reabrir-...-200.txt` | cierre y reapertura |
+| `08-reabrir-hallazgo-abierto-400.txt` | transición inválida |
+| `09`, `10`, `11` | consulta por id, 404 y listado |
+| `15-dashboard-200.txt` | dashboard con los tres indicadores |
+| `16-historial-hallazgo-200.txt` | historial de las cuatro transiciones |
+| `17-historial-inexistente-404.txt` | historial de un id inexistente |
+
 ---
 
 ## Decisiones de diseño
@@ -207,3 +265,61 @@ Además, el plan no tiene identidad propia ni ciclo de vida independiente: no se
 solo, no cambia sin que cambie el hallazgo y, si se reemplaza, el anterior deja de importar.
 Eso lo describe un Value Object inmutable. En la base de datos queda en tres columnas de la
 misma tabla (`plan_responsable`, `plan_fecha_limite`, `plan_notas`).
+
+### 3. CQRS / Event Sourcing completos frente a una extensión liviana
+
+Se eligió la extensión liviana, por los criterios de la sección 7 aplicados en el análisis
+de la Parte 2:
+
+- **Escala:** decenas de operaciones al día; no hay una carga de lectura que escalar por
+  separado.
+- **Forma de las consultas:** tres agregaciones sobre una tabla, resueltas con
+  `GROUP BY` en el mismo esquema. Un modelo de lectura propio duplicaría datos sin
+  aportar nada.
+- **Consistencia:** el comité espera ver el estado al momento de consultar; con una
+  consulta directa la consistencia es inmediata y no hay proyección que mantener.
+- **Costo:** CQRS completo significa un segundo modelo, un proyector, despliegue y
+  esquema propios y la lógica para mantenerlos sincronizados. Es un costo permanente para
+  resolver tres consultas.
+
+Lo que se conserva del espíritu de CQRS es la separación lógica: el dashboard es un caso de
+uso de solo lectura que no pasa por el agregado. Si mañana hiciera falta, se podría mover su
+implementación a otra fuente de datos sin tocar los casos de uso de escritura.
+
+### 4. Bitácora simple (`HistorialCambioEstado`) frente a un Event Store
+
+Cumplimiento necesita ver la secuencia de cambios, no reconstruir el estado reproduciendo
+eventos. Un Event Store haría que `HallazgoAuditoria` dejara de guardar su estado y se
+reconstruyera por replay en cada lectura: un cambio de fondo en un agregado que ya funciona,
+más versionado de eventos y probablemente snapshots. Las señales de sobre-ingeniería de la
+sección 7.2 están presentes: no hay un experto de negocio que modele los eventos, el equipo
+es una persona sin experiencia previa en Event Sourcing y el costo no guarda proporción con
+el problema (un hallazgo tiene pocos cambios de estado en toda su vida).
+
+La bitácora cumple lo que se pidió: es cronológica, registra quién, cuándo y de qué estado a
+qué estado, se escribe en la misma transacción que el cambio y la aplicación no ofrece forma
+de modificarla. Lo que no cubre es la protección frente a alguien con acceso directo a la
+base de datos; para eso la medida correcta sería de infraestructura (permisos de solo
+`INSERT`/`SELECT` sobre la tabla para el usuario de la aplicación, o copias a un
+almacenamiento de solo escritura), no cambiar el modelo de persistencia.
+
+## Herramientas utilizadas
+
+- Java 17, Spring Boot 3.2, Spring Web, Spring Data JPA, Bean Validation, H2
+- JUnit 5, Mockito, MockMvc, `@DataJpaTest`
+- Maven Wrapper, curl, PowerShell, Git, GitHub
+
+## Conclusiones
+
+En la Parte 1 la regla de dependencia sirvió como herramienta para encontrar problemas: al
+revisar que `usecase/` no dependiera de los adaptadores apareció que la consulta devolvía un
+DTO web, y al probar la persistencia en todos los estados apareció que la reconstrucción por
+transiciones no funcionaba con hallazgos reabiertos. La consecuencia menos obvia de Clean
+Architecture fue la transacción: como los casos de uso no pueden usar `@Transactional`, hubo
+que definirla en la configuración. En la Parte 2 los requisitos sonaban exactamente a CQRS y
+Event Sourcing, pero al medirlos contra los criterios de la guía resultaron ser tres consultas
+y una tabla de historial. La decisión se reconsideraría si el dashboard pasara a consultarse
+de forma continua por muchos usuarios con agregaciones costosas (entonces una proyección de
+lectura tendría sentido), o si Cumplimiento pidiera conocer el estado completo de un hallazgo
+en una fecha pasada o alimentar otros sistemas con los cambios; en ese caso el historial ya
+guardado sería el punto de partida para pasar a eventos.
