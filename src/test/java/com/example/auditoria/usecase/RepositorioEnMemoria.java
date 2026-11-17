@@ -2,7 +2,9 @@ package com.example.auditoria.usecase;
 
 import com.example.auditoria.domain.entity.HallazgoAuditoria;
 import com.example.auditoria.domain.valueobject.HallazgoId;
+import com.example.auditoria.usecase.port.ConteoCategoria;
 import com.example.auditoria.usecase.port.HallazgoRepositoryPort;
+import com.example.auditoria.usecase.port.PromedioCategoria;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -30,6 +32,21 @@ public class RepositorioEnMemoria implements HallazgoRepositoryPort {
     @Override
     public List<HallazgoAuditoria> buscarTodos() {
         return new ArrayList<>(datos.values());
+    }
+
+    @Override
+    public List<ConteoCategoria> contarPorSeveridad() {
+        return List.of();
+    }
+
+    @Override
+    public List<ConteoCategoria> contarPorEstado() {
+        return List.of();
+    }
+
+    @Override
+    public List<PromedioCategoria> promedioDiasCierrePorArea() {
+        return List.of();
     }
 
     public int vecesGuardado() {

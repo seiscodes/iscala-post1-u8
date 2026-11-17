@@ -14,4 +14,12 @@ public interface HallazgoRepositoryPort {
     Optional<HallazgoAuditoria> buscarPorId(HallazgoId id);
 
     List<HallazgoAuditoria> buscarTodos();
+
+    // Parte 2: consultas del dashboard en el mismo puerto, sin un repositorio de lectura aparte
+    List<ConteoCategoria> contarPorSeveridad();
+
+    List<ConteoCategoria> contarPorEstado();
+
+    /** Solo hallazgos CERRADO: días entre fechaDeteccion y fechaCierre, promediados por área. */
+    List<PromedioCategoria> promedioDiasCierrePorArea();
 }
