@@ -7,5 +7,5 @@ import java.time.LocalDate;
 
 public interface RegistrarHallazgoUseCase {
     HallazgoId ejecutar(String titulo, String descripcion, String areaResponsable,
-                        Severidad severidad, LocalDate fechaDeteccion);
+                        Severidad severidad, LocalDate fechaDeteccion, String usuario);
 }

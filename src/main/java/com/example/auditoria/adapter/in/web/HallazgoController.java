@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -24,10 +25,17 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.Map;
 
-/** Adaptador de entrada: traduce HTTP a llamadas a los casos de uso. */
+/**
+ * Adaptador de entrada: traduce HTTP a llamadas a los casos de uso.
+ * El usuario que origina cada cambio llega en la cabecera X-Usuario; en producción
+ * saldría de la autenticación.
+ */
 @RestController
 @RequestMapping("/api/hallazgos")
 public class HallazgoController {
+
+    static final String CABECERA_USUARIO = "X-Usuario";
+    static final String USUARIO_POR_DEFECTO = "anonimo";
 
     private final RegistrarHallazgoUseCase registrarUseCase;
     private final IniciarRemediacionUseCase iniciarRemediacionUseCase;
@@ -49,28 +57,32 @@ public class HallazgoController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Map<String, String> registrar(@Valid @RequestBody RegistrarHallazgoRequest req) {
+    public Map<String, String> registrar(@Valid @RequestBody RegistrarHallazgoRequest req,
+                                         @RequestHeader(value = CABECERA_USUARIO, defaultValue = USUARIO_POR_DEFECTO) String usuario) {
         HallazgoId id = registrarUseCase.ejecutar(
-                req.titulo(), req.descripcion(), req.areaResponsable(), req.severidad(), req.fechaDeteccion());
+                req.titulo(), req.descripcion(), req.areaResponsable(), req.severidad(), req.fechaDeteccion(), usuario);
         return Map.of("hallazgoId", id.toString());
     }
 
     @PatchMapping("/{id}/iniciar-remediacion")
     public Map<String, String> iniciarRemediacion(@PathVariable String id,
-                                                  @Valid @RequestBody IniciarRemediacionRequest req) {
-        iniciarRemediacionUseCase.ejecutar(HallazgoId.de(id), req.responsable(), req.fechaLimite(), req.notas());
+                                                  @Valid @RequestBody IniciarRemediacionRequest req,
+                                                  @RequestHeader(value = CABECERA_USUARIO, defaultValue = USUARIO_POR_DEFECTO) String usuario) {
+        iniciarRemediacionUseCase.ejecutar(HallazgoId.de(id), req.responsable(), req.fechaLimite(), req.notas(), usuario);
         return Map.of("estado", "EN_REMEDIACION");
     }
 
     @PatchMapping("/{id}/cerrar")
-    public Map<String, String> cerrar(@PathVariable String id) {
-        cerrarUseCase.ejecutar(HallazgoId.de(id));
+    public Map<String, String> cerrar(@PathVariable String id,
+                                      @RequestHeader(value = CABECERA_USUARIO, defaultValue = USUARIO_POR_DEFECTO) String usuario) {
+        cerrarUseCase.ejecutar(HallazgoId.de(id), usuario);
         return Map.of("estado", "CERRADO");
     }
 
     @PatchMapping("/{id}/reabrir")
-    public Map<String, String> reabrir(@PathVariable String id, @Valid @RequestBody ReabrirRequest req) {
-        reabrirUseCase.ejecutar(HallazgoId.de(id), req.motivo());
+    public Map<String, String> reabrir(@PathVariable String id, @Valid @RequestBody ReabrirRequest req,
+                                       @RequestHeader(value = CABECERA_USUARIO, defaultValue = USUARIO_POR_DEFECTO) String usuario) {
+        reabrirUseCase.ejecutar(HallazgoId.de(id), req.motivo(), usuario);
         return Map.of("estado", "REABIERTO");
     }
 
